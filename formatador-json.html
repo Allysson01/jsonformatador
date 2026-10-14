@@ -1,0 +1,669 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Bloqueia qualquer saída de rede: sem fetch/XHR/beacon/websocket, sem recursos externos. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; worker-src blob:; child-src blob:; img-src data:; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<meta name="color-scheme" content="light dark">
+<title>Formatador JSON</title>
+<link rel="icon" href="data:,">
+<style>
+  :root {
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+    --bg: #f5f6f8; --surface: #ffffff; --surface-2: #f0f2f5; --text: #1f2328; --muted: #5f6b7a; --border: #d5dbe2;
+    --accent: #1f6feb; --accent-hover: #1a5fd0;
+    --err-bg: #fff1f0; --err-border: #f3b4ae; --err-text: #a4161a;
+    --warn-bg: #fff8e6; --warn-border: #f0d48a; --warn-text: #7a5200;
+    --ok: #1a7f37;
+    --k: #0b4fa8; --s: #1a7f37; --n: #b0510b; --b: #8250df; --z: #c4262e; --p: #6e7781;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0e1116; --surface: #161b22; --surface-2: #1c222b; --text: #e6edf3; --muted: #8d96a0; --border: #2d3440;
+      --accent: #3b82f6; --accent-hover: #5b97f8;
+      --err-bg: #2a1414; --err-border: #6e2a2a; --err-text: #ff9b94;
+      --warn-bg: #2a2210; --warn-border: #6b5517; --warn-text: #f2cc60;
+      --ok: #3fb950;
+      --k: #79c0ff; --s: #7ee787; --n: #ffa657; --b: #d2a8ff; --z: #ff7b72; --p: #8b949e;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; height: 100vh; height: 100dvh; display: flex; flex-direction: column;
+    background: var(--bg); color: var(--text);
+    font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  header { padding: 14px 20px 10px; display: flex; align-items: baseline; gap: 6px 12px; flex-wrap: wrap; }
+  h1 { font-size: 18px; margin: 0; font-weight: 650; }
+  .tag { font-size: 12.5px; color: var(--muted); }
+  .toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 0 20px 12px; }
+  button {
+    font: inherit; font-size: 13.5px; padding: 7px 14px; border-radius: 7px; cursor: pointer;
+    border: 1px solid var(--border); background: var(--surface); color: var(--text);
+  }
+  button:hover:not(:disabled) { background: var(--surface-2); }
+  button:disabled { opacity: .55; cursor: default; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  button.primary:hover:not(:disabled) { background: var(--accent-hover); }
+  button.small { font-size: 12.5px; padding: 4px 10px; }
+  button:focus-visible, .out:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  kbd {
+    font: 11px var(--mono); padding: 1px 5px; border: 1px solid var(--border); border-radius: 4px;
+    background: var(--surface-2); color: var(--muted);
+  }
+  .hint { font-size: 12px; color: var(--muted); margin-left: auto; }
+  main { flex: 1; min-height: 360px; display: flex; flex-direction: column; padding: 0 20px 20px; }
+  .pane {
+    flex: 1; display: flex; flex-direction: column; min-height: 0; min-width: 0; overflow: hidden;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+  }
+  .pane:focus-within { border-color: var(--accent); }
+  .pane-head {
+    display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap;
+    padding: 7px 12px; border-bottom: 1px solid var(--border); background: var(--surface-2);
+    font-size: 12.5px; color: var(--muted);
+  }
+  .pane-head strong { color: var(--text); font-weight: 600; }
+  .ok { color: var(--ok); font-weight: 600; }
+  .bad { color: var(--err-text); font-weight: 600; }
+  textarea {
+    flex: 1; min-height: 0; width: 100%; border: 0; outline: none; resize: none; padding: 10px 12px;
+    background: transparent; color: var(--text); font: 13px/20px var(--mono); tab-size: 2;
+  }
+  textarea::placeholder { color: var(--muted); opacity: .8; }
+
+  /* Saída virtualizada: só as linhas visíveis existem no DOM. */
+  .out { flex: 1; min-height: 0; overflow: auto; position: relative; font: 13px/20px var(--mono); cursor: text; }
+  .spacer { position: relative; min-width: 100%; overflow: clip; }
+  .view { position: absolute; top: 0; left: 0; right: 0; will-change: transform; }
+  .r { height: 20px; white-space: pre; }
+  .ln {
+    position: sticky; left: 0; display: inline-block; width: calc(var(--gw, 3ch) + 20px); padding: 0 10px;
+    margin-right: 10px; text-align: right; color: var(--muted); background: var(--surface);
+    border-right: 1px solid var(--border); user-select: none; -webkit-user-select: none;
+  }
+  .k { color: var(--k); } .s { color: var(--s); } .n { color: var(--n); }
+  .b { color: var(--b); } .z { color: var(--z); font-style: italic; } .p { color: var(--p); }
+
+  .msg { margin: 10px; padding: 10px 12px; border-radius: 8px; border: 1px solid; font-size: 13px; }
+  .msg.err { background: var(--err-bg); border-color: var(--err-border); color: var(--err-text); }
+  .msg.warn { background: var(--warn-bg); border-color: var(--warn-border); color: var(--warn-text); }
+  .msg pre {
+    margin: 8px 0; padding: 8px 10px; border-radius: 6px; background: var(--surface); color: var(--text);
+    font: 12.5px/18px var(--mono); white-space: pre; overflow-x: auto;
+  }
+  .msg code { font-family: var(--mono); }
+  [hidden] { display: none !important; }
+
+  @media (max-width: 760px) {
+    body { height: auto; }
+    header { padding: 12px 16px 8px; }
+    .toolbar { padding: 0 16px 10px; }
+    .toolbar button { flex: 1 1 auto; }
+    .hint { display: none; }
+    main { padding: 0 16px 16px; min-height: 0; }
+    .pane { flex: none; height: 75vh; min-height: 320px; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Formatador JSON</h1>
+  <span class="tag">Processado 100% no seu navegador. Nada é enviado, salvo ou registrado.</span>
+</header>
+
+<div class="toolbar">
+  <button id="btnFmt" class="primary" title="Formatar (Ctrl+Enter)">Formatar</button>
+  <button id="btnMin">Minificar</button>
+  <button id="btnCopy">Copiar</button>
+  <button id="btnClear">Limpar</button>
+  <span class="hint"><kbd>Ctrl</kbd> + <kbd>Enter</kbd> formata · colar numa caixa vazia já formata</span>
+</div>
+
+<main>
+  <section class="pane" aria-label="JSON">
+    <div class="pane-head">
+      <span><strong>JSON</strong> <span id="status" role="status" aria-live="polite"></span></span>
+      <span><span id="modeHint" hidden>clique no texto para editar · </span><span id="inInfo">0 caracteres</span></span>
+    </div>
+    <div id="err" class="msg err" role="alert" hidden>
+      <div><strong>JSON inválido</strong> <span id="errWhere"></span></div>
+      <div id="errMsg"></div>
+      <pre id="errSnip" hidden></pre>
+      <button id="btnGoto" class="small" hidden>Ir para o erro</button>
+    </div>
+    <div id="warn" class="msg warn" hidden></div>
+    <textarea id="input" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off"
+      wrap="off" aria-label="JSON"
+      placeholder='Cole seu JSON aqui. Ex.: {"pedido": 123, "itens": [1, 2, 3], "pago": true}'></textarea>
+    <div id="out" class="out" tabindex="0" aria-label="JSON formatado (clique para editar)" hidden>
+      <div id="spacer" class="spacer"><div id="view" class="view"></div></div>
+    </div>
+  </section>
+</main>
+
+<script>
+"use strict";
+
+/* ===== Funções puras: rodam num Web Worker (montado a partir do próprio código-fonte) ou,
+   se o Worker não estiver disponível, na thread principal. Não acessam nada fora delas. ===== */
+
+// Validador próprio, usado só quando JSON.parse falha, para achar a posição exata e dar mensagem clara.
+function locateError(s) {
+  var i = 0, n = s.length, stack = [], state = "value";
+  var NUM = /-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/y;
+  function ws() { while (i < n) { var c = s.charCodeAt(i); if (c === 32 || c === 9 || c === 10 || c === 13) i++; else break; } }
+  function fail(msg) { return { pos: Math.min(i, n), msg: msg }; }
+  function desc() {
+    if (i >= n) return "fim do texto";
+    var c = s[i];
+    return c === "\n" || c === "\r" ? "quebra de linha" : "'" + c + "'";
+  }
+  function str() {
+    i++;
+    while (i < n) {
+      var c = s.charCodeAt(i);
+      if (c === 34) { i++; return null; }
+      if (c === 92) {
+        var e = s[i + 1];
+        if (e === "u") {
+          if (!/^[0-9a-fA-F]{4}$/.test(s.substr(i + 2, 4))) return fail("Escape \\u inválido: são esperados 4 dígitos hexadecimais");
+          i += 6;
+        } else if (e !== undefined && '"\\/bfnrt'.indexOf(e) >= 0) {
+          i += 2;
+        } else {
+          return fail("Sequência de escape inválida dentro da string");
+        }
+        continue;
+      }
+      if (c < 32) return fail("Caractere de controle não permitido dentro de string (quebra de linha ou tab literal; use \\n ou \\t)");
+      i++;
+    }
+    return fail("String não terminada: faltam as aspas de fechamento");
+  }
+  for (;;) {
+    ws();
+    var top = stack[stack.length - 1], c = s[i];
+    if (state === "value" || state === "valueOrEnd") {
+      if (c === "]" && top === "a") {
+        if (state === "valueOrEnd") { stack.pop(); i++; state = "after"; continue; }
+        return fail("Vírgula sobrando antes de ']'");
+      }
+      if (i >= n) return fail("Fim inesperado do texto: era esperado um valor");
+      if (c === "{") { stack.push("o"); i++; state = "keyOrEnd"; continue; }
+      if (c === "[") { stack.push("a"); i++; state = "valueOrEnd"; continue; }
+      if (c === '"') { var e1 = str(); if (e1) return e1; state = "after"; continue; }
+      if (c === "-" || (c >= "0" && c <= "9")) {
+        NUM.lastIndex = i;
+        var m = NUM.exec(s);
+        if (!m || m[0] === "-") return fail("Número inválido");
+        i += m[0].length;
+        if (s[i] >= "0" && s[i] <= "9") return fail("Número inválido: zeros à esquerda não são permitidos");
+        state = "after"; continue;
+      }
+      var lit = s.startsWith("true", i) ? 4 : s.startsWith("false", i) ? 5 : s.startsWith("null", i) ? 4 : 0;
+      if (lit) { i += lit; state = "after"; continue; }
+      if (c === "'") return fail("Strings devem usar aspas duplas (\"), não aspas simples (')");
+      if (c === "}" && top === "o") return fail("Era esperado um valor antes de '}'");
+      return fail("Valor inesperado " + desc() + ": era esperado objeto, array, string, número, true, false ou null");
+    }
+    if (state === "key" || state === "keyOrEnd") {
+      if (c === "}") {
+        if (state === "keyOrEnd") { stack.pop(); i++; state = "after"; continue; }
+        return fail("Vírgula sobrando antes de '}'");
+      }
+      if (c !== '"') {
+        if (i >= n) return fail("Fim inesperado do texto: era esperado o nome de uma propriedade");
+        if (c === "'") return fail("Nomes de propriedade devem usar aspas duplas (\"), não aspas simples (')");
+        return fail("Era esperado o nome da propriedade entre aspas duplas, encontrado " + desc());
+      }
+      var e2 = str(); if (e2) return e2;
+      ws();
+      if (s[i] !== ":") return fail("Era esperado ':' após o nome da propriedade, encontrado " + desc());
+      i++; state = "value"; continue;
+    }
+    // state === "after": um valor acabou de terminar
+    if (!top) return i < n ? fail("Conteúdo extra após o fim do JSON: " + desc()) : null;
+    var close = top === "o" ? "}" : "]";
+    if (c === ",") { i++; state = top === "o" ? "key" : "value"; continue; }
+    if (c === close) { stack.pop(); i++; continue; }
+    if (i >= n) return fail("Fim inesperado do texto: falta fechar com '" + close + "'");
+    var missingComma = /["{\[\-0-9tfn]/.test(c) ? " (provavelmente falta uma vírgula antes deste ponto)" : "";
+    return fail("Era esperado ',' ou '" + close + "', encontrado " + desc() + missingComma);
+  }
+}
+
+// Quebra a saída em "linhas de exibição". Linhas muito longas (ex.: JSON minificado) viram várias,
+// cortadas preferencialmente após , { [ : fora de strings. Offsets em typed arrays (baratos para transferir).
+function buildRows(out, max) {
+  var st = [], en = [], ln = [], fl = [], line = 0, maxLen = 0, start = 0, n = out.length;
+  for (;;) {
+    var end = out.indexOf("\n", start); if (end < 0) end = n;
+    line++;
+    if (end - start <= max) {
+      st.push(start); en.push(end); ln.push(line); fl.push(0);
+      if (end - start > maxLen) maxLen = end - start;
+    } else {
+      var rs = start, inStr = false, esc = false, rowIn = false, first = true;
+      for (var i = start; i < end; i++) {
+        var c = out.charCodeAt(i);
+        if (inStr) { if (esc) esc = false; else if (c === 92) esc = true; else if (c === 34) inStr = false; }
+        else if (c === 34) inStr = true;
+        var len = i + 1 - rs;
+        if (len >= max && !esc && !(c >= 0xD800 && c <= 0xDBFF) &&
+            ((!inStr && (c === 44 || c === 123 || c === 91 || c === 58)) || len >= max * 2)) {
+          st.push(rs); en.push(i + 1); ln.push(first ? line : 0); fl.push(rowIn ? 1 : 0);
+          if (len > maxLen) maxLen = len;
+          first = false; rs = i + 1; rowIn = inStr;
+        }
+      }
+      if (rs < end || first) {
+        st.push(rs); en.push(end); ln.push(first ? line : 0); fl.push(rowIn ? 1 : 0);
+        if (end - rs > maxLen) maxLen = end - rs;
+      }
+    }
+    if (end >= n) break;
+    start = end + 1;
+  }
+  return {
+    starts: Uint32Array.from(st), ends: Uint32Array.from(en), lines: Uint32Array.from(ln),
+    flags: Uint8Array.from(fl), lineCount: line, maxLen: maxLen
+  };
+}
+
+// Procura números que perdem precisão no JSON.parse nativo (mais de 15 dígitos significativos).
+function findBigNumber(s) {
+  for (var i = 0, n = s.length; i < n; i++) {
+    var c = s.charCodeAt(i);
+    if (c === 34) {
+      for (i++; i < n; i++) { var d = s.charCodeAt(i); if (d === 92) i++; else if (d === 34) break; }
+    } else if (c === 45 || (c >= 48 && c <= 57)) {
+      var j = i + 1;
+      while (j < n) { var e = s.charCodeAt(j); if ((e >= 48 && e <= 57) || e === 46 || e === 101 || e === 69 || e === 43 || e === 45) j++; else break; }
+      var t = s.slice(i, j);
+      var sig = t.replace(/^-/, "").replace(/[eE].*$/, "").replace(".", "").replace(/^0+/, "");
+      if (sig.length > 15 && String(Number(t)) !== t) return t;
+      i = j - 1;
+    }
+  }
+  return null;
+}
+
+function processJob(d) {
+  var s = d.text, v;
+  try {
+    v = JSON.parse(s);
+  } catch (e) {
+    var nat = String((e && e.message) || e);
+    var loc = locateError(s), pos = loc ? loc.pos : -1;
+    if (pos < 0) { var pm = /position (\d+)/.exec(nat); if (pm) pos = +pm[1]; }
+    var r = { ok: false, msg: loc ? loc.msg : nat, pos: pos };
+    if (pos >= 0) {
+      var ls = s.lastIndexOf("\n", pos - 1) + 1, le = s.indexOf("\n", pos); if (le < 0) le = s.length;
+      var line = 1;
+      for (var k = s.indexOf("\n"); k >= 0 && k < pos; k = s.indexOf("\n", k + 1)) line++;
+      var text = s.slice(ls, le).replace(/\r$/, "").replace(/\t/g, " ");
+      var col = pos - ls + 1, from = Math.max(0, col - 1 - 50), to = Math.min(text.length, col - 1 + 50);
+      r.line = line; r.col = col;
+      r.snippet = (from > 0 ? "…" : "") + text.slice(from, to) + (to < text.length ? "…" : "");
+      r.caret = col - 1 - from + (from > 0 ? 1 : 0);
+    }
+    return r;
+  }
+  var out;
+  try {
+    out = d.mode === "min" ? JSON.stringify(v) : JSON.stringify(v, null, 2);
+  } catch (e) {
+    return { ok: false, pos: -1, msg: "Não foi possível gerar a saída: " + ((e && e.message) || e) };
+  }
+  var rows = buildRows(out, d.max);
+  rows.ok = true; rows.out = out; rows.big = findBigNumber(s);
+  return rows;
+}
+
+/* ===== Interface ===== */
+/* Uma caixa só: em modo edição é um textarea; após formatar/minificar, o resultado substitui o texto
+   da caixa e ela passa a exibir o JSON com destaque de sintaxe. Clicar no texto volta para a edição. */
+const LH = 20;            // altura da linha em px (igual ao CSS)
+const ROW_MAX = 500;      // máximo de caracteres por linha de exibição
+const MAXH = 15000000;    // limite seguro de altura de elemento nos navegadores
+
+const $ = (id) => document.getElementById(id);
+const input = $("input"), outEl = $("out"), spacer = $("spacer"), view = $("view");
+const btnFmt = $("btnFmt"), btnMin = $("btnMin"), btnCopy = $("btnCopy"), btnClear = $("btnClear");
+const statusEl = $("status"), modeHint = $("modeHint"), inInfo = $("inInfo");
+const errBox = $("err"), errWhere = $("errWhere"), errMsg = $("errMsg"), errSnip = $("errSnip"), btnGoto = $("btnGoto");
+const warnBox = $("warn");
+
+let R = null, lastErr = null, pending = null, jobId = 0, raf = 0, firstRow = 0;
+let worker = null, workerFailed = false;
+const nf = new Intl.NumberFormat("pt-BR");
+
+function getWorker() {
+  if (worker || workerFailed || typeof Worker === "undefined") return worker;
+  try {
+    const src = [locateError, buildRows, findBigNumber, processJob].map(String).join("\n") +
+      "\nself.onmessage=function(e){var r;try{r=processJob(e.data);}catch(x){r={ok:false,pos:-1,msg:'Erro ao processar: '+((x&&x.message)||x)};}" +
+      "r.id=e.data.id;self.postMessage(r,r.ok?[r.starts.buffer,r.ends.buffer,r.lines.buffer,r.flags.buffer]:[]);};";
+    worker = new Worker(URL.createObjectURL(new Blob([src], { type: "text/javascript" })));
+    worker.onmessage = (e) => done(e.data);
+    worker.onerror = (e) => {
+      e.preventDefault();
+      try { worker.terminate(); } catch (_) {}
+      worker = null; workerFailed = true;
+      if (pending) runLocal(pending.job);
+    };
+  } catch (_) {
+    worker = null; workerFailed = true;
+  }
+  return worker;
+}
+
+function runLocal(job) {
+  // Pequeno atraso para o navegador pintar o estado "processando" antes do trabalho pesado.
+  setTimeout(() => {
+    let r;
+    try { r = processJob(job); } catch (e) { r = { ok: false, pos: -1, msg: "Erro ao processar: " + ((e && e.message) || e) }; }
+    r.id = job.id;
+    done(r);
+  }, 30);
+}
+
+function run(mode) {
+  if (pending) return;
+  const text = input.value;
+  if (!text.trim()) {
+    showError(null); showWarn(null);
+    setStatus("Cole um JSON na caixa.", "");
+    showEdit();
+    return;
+  }
+  const job = { id: ++jobId, text, mode, max: ROW_MAX };
+  pending = { job, t0: performance.now() };
+  input.readOnly = true;
+  updateButtons();
+  setTimeout(() => { if (pending && pending.job.id === job.id) setStatus("Processando…", ""); }, 120);
+  const w = getWorker();
+  if (w) w.postMessage(job); else runLocal(job);
+}
+
+function done(r) {
+  if (!pending || r.id !== pending.job.id) return;
+  const ms = Math.round(performance.now() - pending.t0), mode = pending.job.mode;
+  pending = null;
+  input.readOnly = false;
+  if (r.ok) {
+    showError(null);
+    input.value = r.out;    // o resultado substitui o conteúdo da caixa
+    updateInputInfo();
+    R = r;
+    showWarn(r.big);
+    setStatus("Válido · " + (mode === "min" ? "minificado" : "formatado") + " · " + nf.format(r.lineCount) +
+      (r.lineCount === 1 ? " linha" : " linhas") + " · " + nf.format(ms) + " ms", "ok");
+    showView();
+  } else {
+    showWarn(null);
+    showError(r);
+    setStatus("Inválido", "bad");
+    showEdit();
+  }
+  updateButtons();
+}
+
+function setStatus(text, cls) {
+  statusEl.textContent = text;
+  statusEl.className = cls || "";
+}
+
+function updateButtons() {
+  btnFmt.disabled = btnMin.disabled = !!pending;
+  btnCopy.disabled = !input.value;
+}
+
+function showView() {
+  const digits = String(R.lineCount).length;
+  input.hidden = true;
+  outEl.hidden = false;
+  modeHint.hidden = false;
+  outEl.style.setProperty("--gw", digits + "ch");
+  spacer.style.height = Math.min(R.starts.length * LH, MAXH) + "px";
+  spacer.style.width = "calc(" + (digits + R.maxLen) + "ch + 60px)";
+  outEl.scrollTop = 0;
+  outEl.scrollLeft = 0;
+  render();
+  outEl.focus({ preventScroll: true });
+}
+
+function showEdit(pos) {
+  R = null;
+  view.innerHTML = "";
+  outEl.hidden = true;
+  modeHint.hidden = true;
+  input.hidden = false;
+  input.focus({ preventScroll: true });
+  if (pos != null) placeCaret(pos);
+}
+
+let cwCache = 0;
+function charWidth() {
+  if (!cwCache) {
+    const cs = getComputedStyle(input.hidden ? outEl : input);
+    const ctx = document.createElement("canvas").getContext("2d");
+    ctx.font = cs.fontSize + " " + cs.fontFamily;
+    cwCache = ctx.measureText("0").width || 8;
+  }
+  return cwCache;
+}
+
+function scrollInputTo(line, col) {
+  const lh = parseFloat(getComputedStyle(input).lineHeight) || LH;
+  input.scrollTop = Math.max(0, (line - 1) * lh - input.clientHeight / 2);
+  input.scrollLeft = Math.max(0, (col - 1) * charWidth() - input.clientWidth / 2);
+}
+
+function placeCaret(pos) {
+  const v = input.value;
+  pos = Math.max(0, Math.min(pos, v.length));
+  input.setSelectionRange(pos, pos);
+  let line = 1;
+  for (let k = v.indexOf("\n"); k >= 0 && k < pos; k = v.indexOf("\n", k + 1)) line++;
+  scrollInputTo(line, pos - (v.lastIndexOf("\n", pos - 1) + 1) + 1);
+}
+
+/* Destaque de sintaxe de uma linha de exibição. inStr = a linha começa no meio de uma string. */
+const ESC = { "&": "&amp;", "<": "&lt;", ">": "&gt;" };
+const esc = (s) => s.replace(/[&<>]/g, (c) => ESC[c]);
+function strEnd(t, i) {
+  for (const n = t.length; i < n; i++) { const c = t.charCodeAt(i); if (c === 92) i++; else if (c === 34) return i + 1; }
+  return t.length;
+}
+function highlight(t, inStr) {
+  const n = t.length;
+  let h = "", i = 0, p = 0;
+  const emit = (cls, j) => {
+    if (p < i) h += esc(t.slice(p, i));
+    h += '<span class="' + cls + '">' + esc(t.slice(i, j)) + "</span>";
+    i = p = j;
+  };
+  if (inStr) emit("s", strEnd(t, 0));
+  while (i < n) {
+    const c = t.charCodeAt(i);
+    if (c === 34) {
+      const j = strEnd(t, i + 1);
+      let k = j; while (k < n && t.charCodeAt(k) === 32) k++;
+      emit(k < n && t.charCodeAt(k) === 58 ? "k" : "s", j);
+    } else if (c === 45 || (c >= 48 && c <= 57)) {
+      let j = i + 1;
+      while (j < n) { const d = t.charCodeAt(j); if ((d >= 48 && d <= 57) || d === 46 || d === 101 || d === 69 || d === 43 || d === 45) j++; else break; }
+      emit("n", j);
+    } else if (c === 116 && t.startsWith("true", i)) emit("b", i + 4);
+    else if (c === 102 && t.startsWith("false", i)) emit("b", i + 5);
+    else if (c === 110 && t.startsWith("null", i)) emit("z", i + 4);
+    else if (c === 123 || c === 125 || c === 91 || c === 93) emit("p", i + 1);
+    else i++;
+  }
+  if (p < n) h += esc(t.slice(p));
+  return h;
+}
+
+/* Renderiza apenas as linhas visíveis. Para saídas gigantes, a altura é comprimida e o scroll mapeado. */
+function render() {
+  raf = 0;
+  if (!R || outEl.hidden) return;
+  const n = R.starts.length, ch = outEl.clientHeight;
+  const virtualH = n * LH, realH = Math.min(virtualH, MAXH);
+  const maxScroll = Math.max(0, realH - ch), vmax = Math.max(0, virtualH - ch);
+  const st = Math.min(outEl.scrollTop, maxScroll);
+  const vTop = maxScroll > 0 ? st * (vmax / maxScroll) : 0;
+  const first = Math.floor(vTop / LH), off = vTop - first * LH;
+  const last = Math.min(n, first + Math.ceil(ch / LH) + 2);
+  let h = "";
+  for (let r = first; r < last; r++) {
+    const ln = R.lines[r];
+    h += '<div class="r" data-r="' + r + '"><span class="ln">' + (ln || "") + "</span>" +
+      highlight(R.out.slice(R.starts[r], R.ends[r]), R.flags[r] === 1) + "</div>";
+  }
+  firstRow = first;
+  view.style.transform = "translateY(" + (st - off) + "px)";
+  view.innerHTML = h;
+}
+outEl.addEventListener("scroll", () => { if (!raf) raf = requestAnimationFrame(render); }, { passive: true });
+if (typeof ResizeObserver !== "undefined") new ResizeObserver(() => { if (!raf) raf = requestAnimationFrame(render); }).observe(outEl);
+
+// Clique no texto formatado: volta para edição com o cursor no ponto clicado (se não for seleção de texto).
+outEl.addEventListener("click", (e) => {
+  if (!R) return;
+  const sel = window.getSelection();
+  if (sel && !sel.isCollapsed && outEl.contains(sel.anchorNode)) return;
+  const row = e.target.closest(".r");
+  let pos = R.starts[firstRow] || 0;
+  if (row) {
+    const r = +row.dataset.r;
+    const x = e.clientX - row.querySelector(".ln").getBoundingClientRect().right - 10;
+    pos = Math.min(R.ends[r], R.starts[r] + Math.max(0, Math.round(x / charWidth())));
+  }
+  showEdit(pos);
+});
+outEl.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.ctrlKey && !e.metaKey && R) { e.preventDefault(); showEdit(R.starts[firstRow] || 0); }
+});
+
+function showError(r) {
+  lastErr = r;
+  if (!r) { errBox.hidden = true; return; }
+  errBox.hidden = false;
+  errMsg.textContent = r.msg;
+  if (r.line) {
+    errWhere.textContent = "na linha " + nf.format(r.line) + ", coluna " + nf.format(r.col);
+    const g = String(r.line).length;
+    errSnip.textContent = r.line + " | " + r.snippet + "\n" + " ".repeat(g) + " | " + " ".repeat(r.caret) + "^";
+    errSnip.hidden = false;
+    btnGoto.hidden = false;
+  } else {
+    errWhere.textContent = "";
+    errSnip.hidden = true;
+    btnGoto.hidden = true;
+  }
+}
+
+function showWarn(big) {
+  if (!big) { warnBox.hidden = true; return; }
+  const shown = big.length > 40 ? big.slice(0, 40) + "…" : big;
+  warnBox.textContent = "";
+  warnBox.append("Atenção: o número ");
+  const code = document.createElement("code"); code.textContent = shown; warnBox.append(code);
+  warnBox.append(" tem mais de 15 dígitos significativos e perde precisão no JSON.parse do navegador " +
+    "(o valor exibido pode diferir do original). Se o valor exato importa, como em IDs longos, mantenha-o como string.");
+  warnBox.hidden = false;
+}
+
+function gotoError() {
+  if (!lastErr || lastErr.pos < 0) return;
+  if (input.hidden) showEdit();
+  const pos = Math.min(lastErr.pos, input.value.length);
+  input.focus();
+  input.setSelectionRange(pos, Math.min(pos + 1, input.value.length));
+  scrollInputTo(lastErr.line, lastErr.col);
+}
+
+function flash(btn, text) {
+  if (!btn.dataset.label) btn.dataset.label = btn.textContent;
+  btn.textContent = text;
+  clearTimeout(btn._t);
+  btn._t = setTimeout(() => { btn.textContent = btn.dataset.label; }, 1500);
+}
+
+async function copyResult() {
+  const text = input.value;
+  if (!text) return;
+  try {
+    await navigator.clipboard.writeText(text);
+    flash(btnCopy, "Copiado!");
+  } catch (_) {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.cssText = "position:fixed;top:0;left:0;opacity:0";
+    document.body.appendChild(ta);
+    ta.select();
+    let ok = false;
+    try { ok = document.execCommand("copy"); } catch (_) {}
+    ta.remove();
+    flash(btnCopy, ok ? "Copiado!" : "Falha ao copiar");
+  }
+}
+
+function clearAll() {
+  pending = null;
+  input.readOnly = false;
+  input.value = "";
+  showError(null);
+  showWarn(null);
+  setStatus("", "");
+  updateInputInfo();
+  showEdit();
+  updateButtons();
+}
+
+function updateInputInfo() {
+  const n = input.value.length;
+  inInfo.textContent = nf.format(n) + (n === 1 ? " caractere" : " caracteres");
+}
+
+btnFmt.addEventListener("click", () => run("fmt"));
+btnMin.addEventListener("click", () => run("min"));
+btnCopy.addEventListener("click", copyResult);
+btnClear.addEventListener("click", clearAll);
+btnGoto.addEventListener("click", gotoError);
+input.addEventListener("input", () => {
+  updateInputInfo();
+  updateButtons();
+  if (statusEl.className === "ok") setStatus("", "");
+});
+// Colar substituindo todo o conteúdo (caixa vazia, tudo selecionado ou sobre o texto formatado) já formata.
+document.addEventListener("paste", (e) => {
+  if (pending) return;
+  if (!outEl.hidden && e.target !== input) {
+    const text = e.clipboardData && e.clipboardData.getData("text");
+    if (!text) return;
+    e.preventDefault();
+    input.value = text;
+    updateInputInfo();
+    showEdit(0);
+    run("fmt");
+  } else if (e.target === input &&
+      (input.value.length === 0 || (input.selectionStart === 0 && input.selectionEnd === input.value.length))) {
+    setTimeout(() => run("fmt"), 0);
+  }
+});
+document.addEventListener("keydown", (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); run("fmt"); }
+});
+updateButtons();
+input.focus();
+</script>
+</body>
+</html>
